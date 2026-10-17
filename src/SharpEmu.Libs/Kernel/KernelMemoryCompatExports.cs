@@ -4806,7 +4806,9 @@ public static partial class KernelMemoryCompatExports
             executable,
             alignment,
             allowSearch: true,
-            allowAllocateAtAlternative: false,
+            // HLE data has no guest-required address. If the bounded search
+            // misses our preferred range, let the host choose a free one.
+            allowAllocateAtAlternative: true,
             "reserve range",
             out mappedAddress);
     }
