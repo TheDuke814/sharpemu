@@ -267,6 +267,21 @@ public sealed class AgcRegisterDefaultsTests
         Assert.Equal(version8Address, ctx[CpuRegister.Rax]);
     }
 
+    [Fact]
+    public void GetRegisterDefaults2_WhenPreferredHostRangeIsUnavailable_ReturnsMappedData()
+    {
+        var memory = new SparseGuestAddressSpace { SimulatePreferredRangeExhaustion = true };
+        var ctx = new CpuContext(memory, Generation.Gen5);
+        ctx[CpuRegister.Rdi] = 13;
+
+        var result = AgcExports.GetRegisterDefaults2(ctx);
+        var address = ctx[CpuRegister.Rax];
+
+        Assert.Equal((int)OrbisGen2Result.ORBIS_GEN2_OK, result);
+        Assert.True(address >= SparseGuestAddressSpace.AlternativeBase);
+        Assert.Equal(137u, ReadUInt32(memory, address + 0x38));
+    }
+
     private static void AssertRegister(
         ICpuMemory memory,
         ulong address,
@@ -293,7 +308,12 @@ public sealed class AgcRegisterDefaultsTests
 
     private sealed class SparseGuestAddressSpace : ICpuMemory, IGuestAddressSpace
     {
+        public const ulong AlternativeBase = 0x7F00_0000_0000;
+
         private readonly List<Allocation> _allocations = [];
+        private ulong _nextAlternativeAddress = AlternativeBase;
+
+        public bool SimulatePreferredRangeExhaustion { get; init; }
 
         public bool TryRead(ulong virtualAddress, Span<byte> destination) =>
             TryResolve(virtualAddress, destination.Length, out var allocation, out var offset) &&
@@ -321,9 +341,16 @@ public sealed class AgcRegisterDefaultsTests
             bool executable = true,
             bool allowAlternative = true)
         {
-            if (TryAllocateExact(desiredAddress, size))
+            if (!SimulatePreferredRangeExhaustion && TryAllocateExact(desiredAddress, size))
             {
                 return desiredAddress;
+            }
+
+            if (allowAlternative && SimulatePreferredRangeExhaustion)
+            {
+                var alternative = _nextAlternativeAddress;
+                _nextAlternativeAddress += AlignUp(size, 0x1000);
+                return TryAllocateExact(alternative, size) ? alternative : 0;
             }
 
             return allowAlternative &&
@@ -342,6 +369,12 @@ public sealed class AgcRegisterDefaultsTests
             ulong alignment,
             out ulong actualAddress)
         {
+            if (SimulatePreferredRangeExhaustion)
+            {
+                actualAddress = 0;
+                return false;
+            }
+
             alignment = Math.Max(alignment, 1);
             var candidate = AlignUp(desiredAddress, alignment);
             foreach (var allocation in _allocations.OrderBy(item => item.Address))
